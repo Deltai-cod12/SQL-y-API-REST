@@ -1,0 +1,53 @@
+USE ComercialLaEstrella;
+GO
+SET NOCOUNT ON;
+
+PRINT '=== A. OBJETOS Y ESTRUCTURA ===';
+SELECT (SELECT COUNT(*) FROM sys.tables WHERE is_ms_shipped = 0) AS Tablas,
+       (SELECT COUNT(*) FROM sys.foreign_keys WHERE is_ms_shipped = 0) AS ClavesForaneas;
+SELECT t.name AS TriggerNombre, OBJECT_NAME(t.parent_id) AS Tabla, t.is_disabled AS Deshabilitado
+FROM sys.triggers AS t WHERE t.parent_class = 1 ORDER BY Tabla, TriggerNombre;
+SELECT v.name AS Vista FROM sys.views AS v WHERE v.name IN
+ ('Vista_Ventas_Ubicacion','Vista_Top_Productos','Vista_Saldos_Pendientes') ORDER BY v.name;
+
+PRINT '=== B. INTEGRIDAD DE INVENTARIO ===';
+SELECT COUNT(*) AS CatalogosConStockNegativo FROM dbo.CATALOGO_PRODUCTO WHERE EXISTENCIA_ACTUAL_CAT_PRO < 0;
+SELECT COUNT(*) AS CatalogosConPrecioNegativo FROM dbo.CATALOGO_PRODUCTO WHERE PRECIO_VIGENTE_CAT_PRO < 0;
+SELECT COUNT(*) AS DesglosesCantidadNoPositiva FROM dbo.DESGLOSE_VENTA WHERE CANTIDAD_DES_VEN <= 0;
+SELECT COUNT(*) AS DesglosesPrecioNegativo FROM dbo.DESGLOSE_VENTA WHERE PRECIO_UNITARIO_DES_VEN < 0;
+SELECT COUNT(*) AS DesglosesSubtotalInconsistente
+FROM dbo.DESGLOSE_VENTA
+WHERE ABS(CAST(SUBTOTAL_DES_VEN AS DECIMAL(19,2)) - CAST(CANTIDAD_DES_VEN * PRECIO_UNITARIO_DES_VEN AS DECIMAL(19,2))) > 0.01;
+
+PRINT '=== C. PAGOS / VENTAS (RESUMEN) ===';
+;WITH Totales AS (
+ SELECT v.ID_VEN, v.ESTADO_VENTA_ID_ES_VEN,
+   CAST(COALESCE(d.TotalVenta,0) AS DECIMAL(19,2)) AS TotalVenta,
+   CAST(COALESCE(p.TotalPagado,0) AS DECIMAL(19,2)) AS TotalPagado
+ FROM dbo.VENTA v
+ OUTER APPLY (SELECT SUM(CAST(dv.SUBTOTAL_DES_VEN AS DECIMAL(19,2))) AS TotalVenta FROM dbo.DESGLOSE_VENTA dv WHERE dv.VENTA_ID_VEN=v.ID_VEN) d
+ OUTER APPLY (SELECT SUM(CAST(pa.MONTO_PAG AS DECIMAL(19,2))) AS TotalPagado FROM dbo.PAGO pa WHERE pa.VENTA_ID_VEN=v.ID_VEN) p
+)
+SELECT COUNT(*) AS TotalVentas,
+ SUM(CASE WHEN TotalPagado > TotalVenta AND TotalPagado > 0 THEN 1 ELSE 0 END) AS VentasConSobrepago,
+ SUM(CASE WHEN ESTADO_VENTA_ID_ES_VEN = 2 AND TotalPagado < TotalVenta THEN 1 ELSE 0 END) AS PagadasConSaldoPendiente,
+ SUM(CASE WHEN ESTADO_VENTA_ID_ES_VEN = 1 AND TotalVenta > 0 AND TotalPagado >= TotalVenta THEN 1 ELSE 0 END) AS RegistradasTotalmentePagadas,
+ SUM(CASE WHEN ESTADO_VENTA_ID_ES_VEN = 3 AND TotalPagado > 0 THEN 1 ELSE 0 END) AS AnuladasConPagos,
+ SUM(CASE WHEN TotalVenta = 0 AND TotalPagado > 0 THEN 1 ELSE 0 END) AS SinDetalleConPagos
+FROM Totales;
+
+PRINT '=== D. PAGOS INDIVIDUALES ===';
+SELECT COUNT(*) AS PagosNoPositivos FROM dbo.PAGO WHERE MONTO_PAG <= 0;
+
+PRINT '=== E. VENTAS DE PRUEBA ===';
+;WITH Totales AS (
+ SELECT v.ID_VEN,v.ESTADO_VENTA_ID_ES_VEN,
+  CAST(COALESCE((SELECT SUM(CAST(dv.SUBTOTAL_DES_VEN AS DECIMAL(19,2))) FROM dbo.DESGLOSE_VENTA dv WHERE dv.VENTA_ID_VEN=v.ID_VEN),0) AS DECIMAL(19,2)) AS TotalVenta,
+  CAST(COALESCE((SELECT SUM(CAST(p.MONTO_PAG AS DECIMAL(19,2))) FROM dbo.PAGO p WHERE p.VENTA_ID_VEN=v.ID_VEN),0) AS DECIMAL(19,2)) AS TotalPagado
+ FROM dbo.VENTA v WHERE v.ID_VEN IN (9998,9999)
+)
+SELECT ID_VEN,ESTADO_VENTA_ID_ES_VEN,TotalVenta,TotalPagado,TotalVenta-TotalPagado AS Saldo FROM Totales ORDER BY ID_VEN;
+
+PRINT '=== F. PRUEBA DE REFERENCIAS ===';
+DBCC CHECKCONSTRAINTS WITH ALL_CONSTRAINTS, NO_INFOMSGS;
+GO
